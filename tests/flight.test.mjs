@@ -64,7 +64,9 @@ test('all heights reach a result at minimum, standard and maximum mass', {timeou
                 throw new Error(outcome.state+' at '+entrySpeed+' m/s')
             } else if(game.actor.chest.rigid.translation().y>2 && game.stationaryTime<1.65)throw new Error('ended above ground at '+JSON.stringify(game.actor.chest.rigid.translation()))
             if(scenario.mode==='sky' && telemetry.chute!==({normal:'open',fault:'failed',none:'packed'})[scenario.chute])throw new Error('canopy')
-            results.push(outcome.state)
+            if(scenario.chute==='normal' && (outcome.state!=='Landed'||outcome.separated.length||outcome.landing?.chute!=='open'||outcome.landing.vertical>7))
+              throw new Error('normal landing '+JSON.stringify(outcome))
+            results.push({scenario,mass,state:outcome.state,landing:outcome.landing})
           }catch(e){throw new Error(JSON.stringify({...scenario,mass,time:game.time})+' '+e.message)}
         }
         const wallSteps=[]
@@ -96,13 +98,30 @@ test('all heights reach a result at minimum, standard and maximum mass', {timeou
           timings.sort((a,b)=>a-b)
           wallSteps.push({mass,contacts,p95:timings[Math.floor(timings.length*.95)]})
         }
-        return {results,wallSteps}
+        const settings={...defaults,mode:'sky',skyHeight:1600,chute:'normal',quality:'low',volume:0}
+        game.load(settings)
+        game.action('start')
+        let deployedLate=false
+        for(let i=0;i<3000 && useGame.getState().screen!=='result';i++){
+          if(!deployedLate && game.actor.chest.rigid.translation().y<12){
+            game.action('chute')
+            deployedLate=true
+          }
+          game.physics()
+        }
+        const late=useGame.getState().outcome
+        if(!deployedLate || late?.state!=='Dead' || late.landing?.chute!=='opening' || late.landing.vertical<12)
+          throw new Error('late opening '+JSON.stringify(late))
+        return {results,wallSteps,late:late.landing}
       } finally {
         game.dispose()
       }
     })
     assert.equal(results.results.length,63)
-    console.log('63 complete trajectories passed', results.wallSteps)
+    const normal=results.results.filter(r=>r.scenario.chute==='normal')
+    console.log('Normal touchdown vertical, m/s:',normal.map(r=>r.landing.vertical.toFixed(2)).join(', '))
+    console.log('Late opening:',results.late)
+    console.log('63 complete trajectories and wall regression:',results.wallSteps)
     assert.deepEqual(errors,[])
   } finally {
     await browser?.close()

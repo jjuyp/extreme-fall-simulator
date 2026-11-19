@@ -25,10 +25,10 @@ export function waterForce(v: Vec, position: Vec, mass: number, area: number, de
   const scale = Math.min(1, limit / Math.max(.001, magnitude(force)))
   return { x: force.x * scale, y: force.y * scale + WATER_DENSITY * GRAVITY * (mass / 970) * depthFraction, z: force.z * scale }
 }
-export function canopyForce(v: Vec, wind: Vec, heading: number, fill: number, mass: number): Vec {
+export function canopyForce(v: Vec, wind: Vec, heading: number, fill: number, mass: number, flare = 0): Vec {
   const offset = relative(v, wind)
-  const force = drag({ x: offset.x * .45, y: offset.y, z: offset.z * .45 }, AIR_DENSITY, 18 * fill)
-  const glide = 4.4
+  const force = drag({ x: offset.x * .45, y: offset.y, z: offset.z * .45 }, AIR_DENSITY, 18 * fill * (1 + 3.8 * flare))
+  const glide = 4.4 * (1 - .65 * flare)
   return {
     x: force.x + mass * fill * .55 * (Math.sin(heading) * glide - offset.x),
     y: force.y + .5 * AIR_DENSITY * 3.4 * fill * Math.min(36, offset.x ** 2 + offset.z ** 2),

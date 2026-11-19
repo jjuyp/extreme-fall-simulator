@@ -55,7 +55,7 @@ export function startHeight(s: Settings) {
 }
 export const stateLabels = {
   Standing: '準備就緒', Falling: '自由落體', Swimming: '水中', Parachuting: '傘下降',
-  Impacted: '已接觸', Incapacitated: '失去行動能力', Dead: '模擬死亡',
+  Landed: '已著陸', Impacted: '已接觸', Incapacitated: '失去行動能力', Dead: '模擬死亡',
 }
 export type ActorState = keyof typeof stateLabels
 export const chuteLabels = { packed: '收合', opening: '展開中', open: '已展開', failed: '故障' }

@@ -8,7 +8,7 @@ import { Input, type Action } from './input'
 import { Scenery } from './scenery'
 import { airForce, canopyForce, magnitude, waterForce, windAt, type Vec } from './physics'
 import { GRAVITY, MAX_STEPS, STEP, injuryRules, qualityPresets, startHeight, surfaces, type ActorState, type ChuteState, type Settings } from './config'
-import { initialTelemetry, useGame } from './store'
+import { initialTelemetry, useGame, type Landing } from './store'
 
 const clamp = T.MathUtils.clamp
 let init: Promise<void> | undefined
@@ -42,6 +42,8 @@ export class Game {
   private heading = 0
   private waiting: Vec = {x:0,y:0,z:0}
   private landed = -1
+  private landing: Landing | null = null
+  private chuteOpenedAt: number | null = null
   private stationaryTime = 0
   private enteredWater = -1
   private inWater = false
@@ -92,7 +94,7 @@ export class Game {
     this.fogColor.copy((this.scenery.scene.fog as T.FogExp2).color)
     this.resolution=qualityPresets[settings.quality].ratio
     this.resize()
-    Object.assign(this,{ accumulator:0,time:0,state:'Standing',chute:'packed',chuteTime:0,heading:0,landed:-1,
+    Object.assign(this,{ accumulator:0,time:0,state:'Standing',chute:'packed',chuteTime:0,heading:0,landed:-1,landing:null,chuteOpenedAt:null,
       enteredWater:-1,inWater:false,stationaryTime:0,peak:0,speed:0,acceleration:0,hudTime:0,cameraReady:false,wind:windAt(settings,0) })
     this.input.reset()
     useGame.setState({screen,paused:false,outcome:null,telemetry:{...initialTelemetry,height:startHeight(settings),wind:magnitude(this.wind)}})
@@ -184,17 +186,22 @@ export class Game {
     const chest=this.actor.chest.rigid
     const movementX=this.input.x,movementY=this.input.y
     this.heading+=movementX*STEP*1.1
-    if(this.chute==='opening') {
+    if(this.chute==='opening' && this.landed<0) {
       this.chuteTime+=STEP
       if(this.chuteTime>=1.05) {
         this.chute=this.config.chute==='fault'?'failed':'open'
-        if(this.chute==='open') this.state='Parachuting'
+        if(this.chute==='open') {
+          this.state='Parachuting'
+          this.chuteOpenedAt=Math.max(0,chest.translation().y-1.39)
+        }
         this.publish()
       }
     }
     const fill=this.chute==='open'?1:this.chute==='opening'?.72*clamp(this.chuteTime/1.05,0,1):this.chute==='failed'?.11:0
+    // Increase canopy braking smoothly on final approach in the normal scenario.
+    const flare=this.chute==='open'?clamp(1-(chest.translation().y-1.39)/12,0,1):0
     const canopy=fill>0 && this.landed<0
-      ? canopyForce(chest.linvel(),this.wind,this.heading,fill,this.config.mass)
+      ? canopyForce(chest.linvel(),this.wind,this.heading,fill,this.config.mass,flare)
       : null
     let entry: {position:Vec; speed:number} | undefined
     for(const part of this.actor.parts.values()) {
@@ -259,7 +266,7 @@ export class Game {
       const p=part.rigid.translation()
       if(p.y>startHeight(this.config)-.65 && this.time<.5) return
       if(this.landed<0 && this.config.mode!=='falls' && p.y<=this.scenery.floor+1.25 && now.y<=this.scenery.floor+2 && impulse>.3) {
-        this.landed=this.time
+        this.recordLanding(previous)
         this.state='Impacted'
         this.fx.play(this.config.volume,false)
       }
@@ -268,7 +275,14 @@ export class Game {
     })
     for(const [part,{impulse,position}] of impacts) {
       const waterScale=this.inWater?injuryRules.waterScale:1
-      const score=impulse*injuryRules.scoreScale*surfaces[this.config.surface].injury*waterScale
+      const landing=this.landing
+      let loadScale=1
+      if(landing?.chute==='open' && position.y<=this.scenery.floor+2) {
+        // The harness and landing roll spread the load of a controlled touchdown.
+        const effectiveSpeed=Math.hypot(landing.vertical,.5*landing.horizontal)
+        loadScale=clamp((effectiveSpeed-5)/7,.1,1)
+      }
+      const score=impulse*injuryRules.scoreScale*surfaces[this.config.surface].injury*waterScale*loadScale
       part.cooldown=.19
       this.wound(part,score,position)
     }
@@ -281,7 +295,7 @@ export class Game {
       this.wound(this.actor.chest,Math.max(0,entry.speed-9.4)**2*.014,entry.position)
     }
     if(this.config.mode!=='falls' && this.landed<0 && now.y<1.4 && speed<2.5 && this.time>1) {
-      this.landed=this.time
+      this.recordLanding(previous)
       this.state='Impacted'
     }
     if(this.config.mode==='falls' && this.landed<0 && this.enteredWater<0 && this.time>2 && speed<1 && now.y>0) {
@@ -301,6 +315,18 @@ export class Game {
     this.canopy.rotation.set(0,this.heading,this.chute==='failed'?.72*Math.sin(this.time*4):0)
   }
 
+  private recordLanding(velocity: Vec) {
+    this.landed=this.time
+    if(this.config.mode==='sky') {
+      this.landing={
+        vertical:Math.max(0,-velocity.y),
+        horizontal:Math.hypot(velocity.x,velocity.z),
+        chute:this.chute,
+        openedAt:this.chuteOpenedAt,
+      }
+    }
+  }
+
   private wound(part: Part, score: number, position: Vec) {
     if(score<=0) return
     this.actor.hurt(part,score,child => this.fx.burst(child.rigid.translation(),this.config.blood,true))
@@ -313,9 +339,9 @@ export class Game {
   private finish() {
     const score=this.actor.score
     this.state=score>=injuryRules.dead?'Dead':score>=injuryRules.incapacitated?'Incapacitated':
-      this.enteredWater>=0?'Swimming':'Impacted'
+      this.enteredWater>=0?'Swimming':this.landing?.chute==='open'?'Landed':'Impacted'
     this.publish()
-    useGame.setState({screen:'result',outcome:{state:this.state,parts:this.actor.damaged,separated:this.actor.separated,peak:this.peak}})
+    useGame.setState({screen:'result',outcome:{state:this.state,parts:this.actor.damaged,separated:this.actor.separated,peak:this.peak,landing:this.landing}})
   }
 
   private publish() {

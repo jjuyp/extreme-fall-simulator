@@ -4,7 +4,10 @@ export interface Telemetry {
   height: number; speed: number; acceleration: number; wind: number; fps: number
   actor: ActorState; chute: ChuteState; peak: number
 }
-export interface Outcome { state: ActorState; parts: string[]; separated: string[]; peak: number }
+export interface Landing {
+  vertical: number; horizontal: number; chute: ChuteState; openedAt: number | null
+}
+export interface Outcome { state: ActorState; parts: string[]; separated: string[]; peak: number; landing: Landing | null }
 export const initialTelemetry: Telemetry = {
   height: 0, speed: 0, acceleration: 0, wind: 0, fps: 0, actor: 'Standing', chute: 'packed', peak: 0,
 }

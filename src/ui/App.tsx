@@ -209,6 +209,11 @@ export function App() {
       <div className="eyebrow">模擬結果</div>
       <h2>{stateLabels[outcome.state]}</h2>
       <dl><dt>最高速度</dt><dd>{outcome.peak.toFixed(1)} m/s</dd>
+        {outcome.landing&&<>
+          <dt>觸地傘況</dt><dd>{chuteLabels[outcome.landing.chute]}</dd>
+          {outcome.landing.openedAt!==null&&<><dt>展開完成高度</dt><dd>{outcome.landing.openedAt.toFixed(1)} m</dd></>}
+          <dt>觸地速度</dt><dd>垂直 {outcome.landing.vertical.toFixed(1)} m/s · 水平 {outcome.landing.horizontal.toFixed(1)} m/s</dd>
+        </>}
         <dt>受損部位</dt><dd>{outcome.parts.join('、') || '無'}</dd>
         <dt>肢體分離</dt><dd>{outcome.separated.join('、') || '未觸發'}</dd></dl>
       <p className="notice">傷害與死亡依沙盒遊戲規則判定，無醫療預測用途。</p>
