@@ -8,6 +8,8 @@ export class Effects {
   private drops: T.InstancedMesh
   private stains: T.InstancedMesh
   private dummy = new T.Object3D()
+  private readonly dropColors = injuryRules.colors.map(color => new T.Color(color))
+  private readonly splashColor = new T.Color(0xa8e5e9)
   private dropIndex = 0
   private stainIndex = 0
   private audio?: AudioContext
@@ -52,7 +54,7 @@ export class Effects {
       slot.position.set(p.x,p.y,p.z)
       slot.velocity.set((Math.random()-.5)*5,Math.random()*4+.4,(Math.random()-.5)*5)
       slot.life = .38+Math.random()*.7
-      this.drops.setColorAt(index,new T.Color(splash ? 0xa8e5e9 : injuryRules.colors[index%3]))
+      this.drops.setColorAt(index,splash ? this.splashColor : this.dropColors[index%3])
     }
     if (this.drops.instanceColor) this.drops.instanceColor.needsUpdate = true
   }
@@ -65,10 +67,12 @@ export class Effects {
     this.stains.instanceMatrix.needsUpdate = true
   }
   step(floor: number) {
+    let changed = false
     this.dummy.rotation.set(0,0,0)
     for (let i=0;i<this.particles.length;i++) {
       const p = this.particles[i]
       if (p.life <= 0) continue
+      changed = true
       p.life -= STEP
       p.velocity.y -= GRAVITY*STEP
       p.position.addScaledVector(p.velocity,STEP)
@@ -82,7 +86,7 @@ export class Effects {
       this.dummy.updateMatrix()
       this.drops.setMatrixAt(i,this.dummy.matrix)
     }
-    this.drops.instanceMatrix.needsUpdate = true
+    if (changed) this.drops.instanceMatrix.needsUpdate = true
   }
   dispose() { void this.audio?.close().catch(() => {}) }
 }

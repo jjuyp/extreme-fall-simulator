@@ -121,7 +121,10 @@ export class Actor {
     this.sync(false)
   }
   setMass(mass: number) {
-    for (const {collider,spec} of this.parts.values()) collider.setMass(mass * spec.weight / totalWeight)
+    for (const {collider,rigid,spec} of this.parts.values()) {
+      collider.setMass(mass * spec.weight / totalWeight)
+      rigid.recomputeMassPropertiesFromColliders()
+    }
   }
   launch(velocity: Vec) {
     for (const part of this.parts.values()) {

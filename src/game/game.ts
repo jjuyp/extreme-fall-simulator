@@ -42,6 +42,7 @@ export class Game {
   private heading = 0
   private waiting: Vec = {x:0,y:0,z:0}
   private landed = -1
+  private stationaryTime = 0
   private enteredWater = -1
   private inWater = false
   private peak = 0
@@ -92,7 +93,7 @@ export class Game {
     this.resolution=qualityPresets[settings.quality].ratio
     this.resize()
     Object.assign(this,{ accumulator:0,time:0,state:'Standing',chute:'packed',chuteTime:0,heading:0,landed:-1,
-      enteredWater:-1,inWater:false,peak:0,speed:0,acceleration:0,hudTime:0,cameraReady:false,wind:windAt(settings,0) })
+      enteredWater:-1,inWater:false,stationaryTime:0,peak:0,speed:0,acceleration:0,hudTime:0,cameraReady:false,wind:windAt(settings,0) })
     this.input.reset()
     useGame.setState({screen,paused:false,outcome:null,telemetry:{...initialTelemetry,height:startHeight(settings),wind:magnitude(this.wind)}})
   }
@@ -180,7 +181,7 @@ export class Game {
       this.queue.clear()
       return
     }
-    const chest=this.actor.chest.rigid, before=chest.translation()
+    const chest=this.actor.chest.rigid
     const movementX=this.input.x,movementY=this.input.y
     this.heading+=movementX*STEP*1.1
     if(this.chute==='opening') {
@@ -192,6 +193,10 @@ export class Game {
       }
     }
     const fill=this.chute==='open'?1:this.chute==='opening'?.72*clamp(this.chuteTime/1.05,0,1):this.chute==='failed'?.11:0
+    const canopy=fill>0 && this.landed<0
+      ? canopyForce(chest.linvel(),this.wind,this.heading,fill,this.config.mass)
+      : null
+    let entry: {position:Vec; speed:number} | undefined
     for(const part of this.actor.parts.values()) {
       const {rigid,spec}=part, p=rigid.translation(), v=rigid.linvel(), mass=rigid.mass()
       part.velocity=v
@@ -208,22 +213,33 @@ export class Game {
         f.x+=liquid.x; f.y+=liquid.y; f.z+=liquid.z
         if(this.state==='Swimming') { f.x+=mass*movementX*3; f.z+=mass*movementY*3; f.y+=mass*.24 }
       }
+      if(canopy) {
+        const fraction=mass/this.config.mass
+        f.x+=canopy.x*fraction
+        f.y+=canopy.y*fraction
+        f.z+=canopy.z*fraction
+        if(this.chute==='open') f.y-=mass*movementY*.8
+      }
       if(part===this.actor.chest) rigid.resetTorques(false)
       if(part===this.actor.chest && this.landed<0 && !this.inWater) {
-        if(fill>0) {
-          const force=canopyForce(v,this.wind,this.heading,fill,this.config.mass)
-          f.x+=force.x; f.y+=force.y; f.z+=force.z
-          if(this.chute==='failed') rigid.addTorque({x:0,y:0,z:9*Math.sin(this.time*4)},true)
+        if(canopy) {
+          const torqueScale=this.config.mass/75
+          const spin=rigid.angvel()
+          if(this.chute==='failed') rigid.addTorque({x:0,y:0,z:torqueScale*(4*Math.sin(this.time*4)-.65*spin.z)},true)
           if(this.chute==='open') {
-            f.y-=this.config.mass*movementY*.8
             const upY=1-2*(q.x*q.x+q.z*q.z)
             const upX=2*(q.x*q.y-q.w*q.z), upZ=2*(q.y*q.z+q.w*q.x)
-            if(upY<.97) rigid.addTorque({x:-upZ*24,y:0,z:upX*24},true)
+            if(upY<.97) rigid.addTorque({x:torqueScale*(-upZ*12-spin.x),y:0,z:torqueScale*(upX*12-spin.z)},true)
           }
         } else {
           f.x+=this.config.mass*movementX*1.8
           f.z+=this.config.mass*movementY*1.8
         }
+      }
+      const footY=p.y-height*.5
+      if(!this.inWater && this.scenery.containsWater(p) && footY<=0) {
+        const speed=Math.max(0,-v.y)
+        if(!entry || speed>entry.speed) entry={position:p,speed}
       }
       rigid.addForce(f,false)
     }
@@ -233,6 +249,7 @@ export class Game {
     this.acceleration=magnitude({x:(velocity.x-previous.x)/STEP,y:(velocity.y-previous.y)/STEP,z:(velocity.z-previous.z)/STEP})
     this.speed=speed
     this.peak=Math.max(this.peak,speed)
+    const impacts=new Map<Part, {impulse:number; position:Vec}>()
     this.queue.drainContactForceEvents(event => {
       const a=this.actor.colliders.get(event.collider1()), b=this.actor.colliders.get(event.collider2())
       if(Boolean(a)===Boolean(b)) return
@@ -241,25 +258,27 @@ export class Game {
       const impulse=event.totalForceMagnitude()*STEP
       const p=part.rigid.translation()
       if(p.y>startHeight(this.config)-.65 && this.time<.5) return
-      if(this.landed<0 && this.config.mode!=='falls' && p.y<=this.scenery.floor+1.25 && impulse>.3) {
+      if(this.landed<0 && this.config.mode!=='falls' && p.y<=this.scenery.floor+1.25 && now.y<=this.scenery.floor+2 && impulse>.3) {
         this.landed=this.time
         this.state='Impacted'
         this.fx.play(this.config.volume,false)
       }
       if(impactSpeed<injuryRules.minimumContactSpeed || impulse<1.7 || part.cooldown>0) return
+      if(impulse>(impacts.get(part)?.impulse??0)) impacts.set(part,{impulse,position:p})
+    })
+    for(const [part,{impulse,position}] of impacts) {
       const waterScale=this.inWater?injuryRules.waterScale:1
       const score=impulse*injuryRules.scoreScale*surfaces[this.config.surface].injury*waterScale
       part.cooldown=.19
-      this.wound(part,score,p)
-    })
-    if(this.scenery.containsWater(now) && before.y>0 && now.y<=0 && !this.inWater) {
+      this.wound(part,score,position)
+    }
+    if(entry) {
       this.inWater=true
       this.enteredWater=this.time
       this.state='Swimming'
-      this.fx.burst({ x:now.x,y:.05,z:now.z },'high',false,true)
+      this.fx.burst({ x:entry.position.x,y:.05,z:entry.position.z },'high',false,true)
       this.fx.play(this.config.volume,true)
-      const entrySpeed=Math.max(0,-previous.y)
-      this.wound(this.actor.chest,Math.max(0,entrySpeed-9)**2*.014,now)
+      this.wound(this.actor.chest,Math.max(0,entry.speed-9.4)**2*.014,entry.position)
     }
     if(this.config.mode!=='falls' && this.landed<0 && now.y<1.4 && speed<2.5 && this.time>1) {
       this.landed=this.time
@@ -269,7 +288,12 @@ export class Game {
       this.landed=this.time
       this.state='Impacted'
     }
-    if(this.landed>=0 && this.time-this.landed>1.65 || this.enteredWater>=0 && this.time-this.enteredWater>6) this.finish()
+    this.stationaryTime=this.config.mode==='tower' && this.time>1 && speed<.55 ? this.stationaryTime+STEP : 0
+    const stoppedOnLedge=this.stationaryTime>=1.65
+    const settledOnGround=this.landed>=0 && this.time-this.landed>1.65 && now.y<=this.scenery.floor+2 && speed<2.5
+    const completedSwim=this.enteredWater>=0 && this.time-this.enteredWater>6
+    const stoppedBeforePool=this.config.mode==='falls' && this.landed>=0 && this.time-this.landed>1.65 && speed<1
+    if(stoppedOnLedge || settledOnGround || completedSwim || stoppedBeforePool) this.finish()
     this.fx.step(this.scenery.floor)
     this.canopy.visible=fill>0 && (this.landed<0 || this.time-this.landed<.8)
     this.canopy.position.set(now.x,now.y,now.z)
@@ -302,6 +326,8 @@ export class Game {
     }})
   }
 
+  private followTarget = new T.Vector3()
+
   private updateCamera(dt: number, menu: boolean, firstPerson: boolean) {
     const head=this.actor.head.rigid.translation(), body=this.actor.chest.rigid.translation()
     this.input.pitch=clamp(this.input.pitch,-1.05,1.02)
@@ -320,14 +346,16 @@ export class Game {
       const canopyFocus=this.canopy.visible?2.05*this.canopy.scale.y:0
       const distance=menu?(portrait?10.7:12.3):this.canopy.visible?(portrait?11.6:11):6.5
       this.target.set(body.x,body.y+(menu?0:.21)+canopyFocus,body.z)
+      this.followTarget.lerp(this.target,smooth)
+      this.target.copy(this.followTarget)
       this.cameraGoal.set(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch)).multiplyScalar(distance).add(this.target)
       this.rayDirection.subVectors(this.cameraGoal,this.target).normalize()
       const hit=this.world.castRay(new R.Ray(this.target,this.rayDirection),distance,true,R.QueryFilterFlags.EXCLUDE_DYNAMIC|R.QueryFilterFlags.EXCLUDE_KINEMATIC)
       if(hit) this.cameraGoal.copy(this.target).addScaledVector(this.rayDirection,Math.max(.22,hit.timeOfImpact-.3))
       this.cameraGoal.y=Math.max(this.scenery.floor+.23,this.cameraGoal.y)
-      this.camera.position.lerp(this.cameraGoal,smooth)
+      this.camera.position.lerp(this.cameraGoal,hit?1:smooth)
       const shifted=menu&&!portrait?distance*.23:0
-      this.look.set(body.x-Math.cos(yaw)*shifted,body.y+canopyFocus-(menu&&portrait?1.76:.12),body.z+Math.sin(yaw)*shifted)
+      this.look.set(this.target.x-Math.cos(yaw)*shifted,this.target.y-(menu&&portrait?1.76:.12),this.target.z+Math.sin(yaw)*shifted)
     }
     this.camera.lookAt(this.look)
     this.cameraReady=true

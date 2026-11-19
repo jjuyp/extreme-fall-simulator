@@ -218,19 +218,20 @@ export class Scenery {
     this.floor=-5.5
     this.ground(400,this.floor)
     const h=startHeight(this.settings)
-    this.launch={x:2.5,y:h,z:-8.5}
+    const crestZ=-10.5
+    this.launch={x:0,y:h,z:crestZ+.25}
     this.box(0,h/2-2.7,-19,31,h+5.4,17,0x5a6560,true)
     const shelves: [number,number,number,number,number,number,number][]=[]
     for(let i=0;i<21;i++) {
       const x=-15+i*1.5
-      if(x>-6.7&&x<4.6) continue
+      if(Math.abs(x)<5.8) continue
       const w=2.6+this.rng()*2.5
       shelves.push([x,h*.38-1,-10.65,w,Math.max(3,h*1.28),2+this.rng()*3.6,[0x576963,0x657368,0x777c6d][i%3]])
       shelves.push([x,h-.6,-13.4,w,2+this.rng()*1.5,4+this.rng()*3.8,0x6d7e5c])
     }
     this.batch(shelves,new T.DodecahedronGeometry(.75,0),true)
-    this.box(2.5,h-.23,-9.34,4.7,.46,2.2,0x596d60,true)
-    this.rampMark(2.5,h,-8.62)
+    this.box(0,h-.13,crestZ-.71,4.7,.26,2,0x596d60,true)
+    this.rampMark(0,h,crestZ-.42)
     for(let i=0;i<40;i++) {
       const side=i%2===0 ? 1 : -1
       const x=side*(16+this.rng()*16), z=(this.rng()-.64)*39
@@ -265,12 +266,12 @@ export class Scenery {
     const pool=new T.Mesh(new T.PlaneGeometry(120,95),shader(true))
     pool.rotation.x=-Math.PI/2; pool.position.z=7
     this.scene.add(pool)
-    const sheet=new T.Mesh(new T.PlaneGeometry(6,h+.7,1,1),shader(false))
-    sheet.position.set(-3,h/2-.1,-10.42)
+    const sheet=new T.Mesh(new T.PlaneGeometry(6,h,1,1),shader(false))
+    sheet.position.set(0,h/2,crestZ+.04)
     this.scene.add(sheet)
     for(let i=0;i<8;i++) {
       const rim=new T.Mesh(new T.DodecahedronGeometry(1.8+this.rng()*1.2),this.mat(0x738783))
-      rim.position.set(-7+i*1.22,-.1+this.rng()*.18,-11+this.rng()*1.4)
+      rim.position.set(-4.25+i*1.22,-.1+this.rng()*.18,crestZ+this.rng()*1.4)
       rim.scale.y=.36
       this.scene.add(rim)
     }

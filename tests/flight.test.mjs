@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { chromium } from 'playwright'
 import { createServer } from 'vite'
 
-test('all low-altitude sky scenarios finish on terrain', {timeout:60_000}, async()=>{
+test('all heights reach a result at minimum, standard and maximum mass', {timeout:240_000}, async()=>{
   const server=await createServer({server:{host:'127.0.0.1',port:0}})
   let browser
   try {
@@ -26,40 +26,83 @@ test('all low-altitude sky scenarios finish on terrain', {timeout:60_000}, async
     const results=await page.evaluate(async()=>{
       const {Game,initializePhysics,loadMarker}=await import('/src/game/game.ts')
       const {useGame}=await import('/src/game/store.ts')
-      const {defaults}=await import('/src/game/config.ts')
+      const {defaults,towers,fallHeights,skyHeights,startHeight}=await import('/src/game/config.ts')
       const [,marker]=await Promise.all([initializePhysics(),loadMarker()])
       const game=new Game(document.getElementById('host'),marker)
       cancelAnimationFrame(game.frame)
       const results=[]
       try {
-        for(const chute of ['normal','fault','none']){
-          const settings={...defaults,mode:'sky',skyHeight:1600,chute,quality:'low',volume:0}
-          useGame.setState({settings})
+        const cases=[
+          ...Object.keys(towers).map(tower=>({mode:'tower',tower})),
+          ...fallHeights.map(fallsHeight=>({mode:'falls',fallsHeight})),
+          ...skyHeights.flatMap(skyHeight=>['normal','fault','none'].map(chute=>({mode:'sky',skyHeight,chute}))),
+        ]
+        for(const mass of [40,75,135]) for(const scenario of cases){
+          const settings={...defaults,...scenario,quality:'low',volume:0}
+          game.load(settings)
+          game.select({...settings,mass})
+          game.physics()
+          game.action('start')
+          const totalMass=[...game.actor.parts.values()].reduce((sum,part)=>sum+part.rigid.mass(),0)
+          if(Math.abs(totalMass-mass)>.01)throw new Error(JSON.stringify(scenario)+' mass '+totalMass)
+          let entrySpeed
+          try {
+            for(let i=0;i<15000 && useGame.getState().screen!=='result';i++){
+              if(i===100 && scenario.mode==='sky')game.action('chute')
+              const waterBefore=game.enteredWater
+              const approach=scenario.mode!=='falls'||waterBefore>=0?0:Math.max(...[...game.actor.parts.values()].map(part=>-part.rigid.linvel().y))
+              game.physics()
+              if(waterBefore<0 && game.enteredWater>=0)entrySpeed=approach
+              const y=game.actor.chest.rigid.translation().y
+              if(!Number.isFinite(y)||y>startHeight(settings)+3)throw new Error('unstable position '+y)
+            }
+            const {screen,outcome,telemetry}=useGame.getState()
+            if(screen!=='result'||!outcome)throw new Error('unfinished at '+JSON.stringify(game.actor.chest.rigid.translation()))
+            if(scenario.mode==='falls'){
+              if(game.enteredWater<0)throw new Error('missed water')
+              if(scenario.fallsHeight===4 && (outcome.state!=='Swimming'||entrySpeed<7.7||entrySpeed>9.5))
+                throw new Error(outcome.state+' at '+entrySpeed+' m/s')
+            } else if(game.actor.chest.rigid.translation().y>2 && game.stationaryTime<1.65)throw new Error('ended above ground at '+JSON.stringify(game.actor.chest.rigid.translation()))
+            if(scenario.mode==='sky' && telemetry.chute!==({normal:'open',fault:'failed',none:'packed'})[scenario.chute])throw new Error('canopy')
+            results.push(outcome.state)
+          }catch(e){throw new Error(JSON.stringify({...scenario,mass,time:game.time})+' '+e.message)}
+        }
+        const wallSteps=[]
+        for(const mass of [40,75,135]){
+          const settings={...defaults,mode:'tower',tower:'block',mass,wind:0,quality:'low',volume:0}
           game.load(settings)
           game.action('start')
-          try {
-            for(let i=0;i<60;i++)game.physics()
-            game.action('chute')
-            for(let i=60;i<8400 && useGame.getState().screen!=='result';i++)game.physics()
-          } catch(error) {
-            const p=game.actor.chest.rigid.translation()
-            throw new Error(`${chute}, t=${game.time.toFixed(2)}, y=${p.y.toFixed(2)}: ${error.message}`)
+          for(let i=0;i<55;i++)game.physics()
+          for(const {rigid} of game.actor.parts.values()) {
+            const velocity=rigid.linvel()
+            rigid.setLinvel({...velocity,z:-15},true)
           }
-          const {outcome,telemetry,screen}=useGame.getState()
-          const altitude=game.actor.chest.rigid.translation().y
-          results.push({chute,altitude,screen,time:game.time,outcome,flightState:telemetry.chute})
+          game.input.yaw=Math.PI
+          let contacts=0
+          const wound=game.wound
+          game.wound=function(part, score, position){
+            if(position.y>3 && position.y<25)contacts++
+            wound.call(this,part,score,position)
+          }
+          const timings=[]
+          for(let i=0;i<360 && useGame.getState().screen!=='result';i++){
+            const start=performance.now()
+            game.physics()
+            game.updateCamera(1/60,false,false)
+            timings.push(performance.now()-start)
+          }
+          game.wound=wound
+          if(!contacts || useGame.getState().screen!=='result')throw new Error('Wall collision case failed at '+mass+' kg')
+          timings.sort((a,b)=>a-b)
+          wallSteps.push({mass,contacts,p95:timings[Math.floor(timings.length*.95)]})
         }
+        return {results,wallSteps}
       } finally {
         game.dispose()
       }
-      return results
     })
-    for(const [result,state] of results.map((result,i)=>[result,['open','failed','packed'][i]])){
-      console.log(`${result.chute}: ${result.time.toFixed(1)} s, ${result.altitude.toFixed(2)} m above terrain, ${result.flightState}`)
-      assert.equal(result.screen,'result',JSON.stringify(result))
-      assert.ok(result.altitude>=-.05 && result.altitude<2,JSON.stringify(result))
-      assert.equal(result.flightState,state)
-    }
+    assert.equal(results.results.length,63)
+    console.log('63 complete trajectories passed', results.wallSteps)
     assert.deepEqual(errors,[])
   } finally {
     await browser?.close()
