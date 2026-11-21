@@ -47,7 +47,7 @@ export interface Settings {
 export const defaults: Settings = {
   mode: 'tower', tower: 'house', fallsHeight: 12, skyHeight: 2000, chute: 'normal',
   weather: 'clear', mass: 75, wind: 3, direction: 45, surface: 'concrete',
-  blood: 'medium', quality: matchMediaSafe() ? 'low' : 'medium', volume: .35,
+  blood: 'medium', quality: matchMediaSafe() ? 'low' : 'medium', volume: .48,
 }
 function matchMediaSafe() { return typeof matchMedia !== 'undefined' && matchMedia('(pointer: coarse)').matches }
 export function startHeight(s: Settings) {

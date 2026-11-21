@@ -104,5 +104,4 @@ test('impact effects reuse a bounded red-particle pool and advance with gravity'
   assert.equal(effects.particles.length,injuryRules.maxParticles)
   for(let i=0;i<120;i++)effects.step(0)
   assert.ok(effects.particles.every(p=>p.life===0))
-  effects.dispose()
 })

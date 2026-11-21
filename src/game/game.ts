@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 
 import R from '@dimforge/rapier3d-compat'
 import { Actor, type Part } from './actor'
+import { GameAudio } from './audio'
 import { Effects } from './effects'
 import { Input, type Action } from './input'
 import { Scenery } from './scenery'
@@ -33,6 +34,8 @@ export class Game {
   private scenery!: Scenery
   private actor!: Actor
   private fx!: Effects
+  private readonly audio = new GameAudio()
+  private lastImpactSound = -1
   private accumulator = 0
   private time = 0
   private last = 0
@@ -74,10 +77,12 @@ export class Game {
     this.observer=new ResizeObserver(() => this.resize())
     this.observer.observe(this.host)
     this.load(useGame.getState().settings)
+    document.addEventListener('visibilitychange',this.updateAudio)
     this.frame=requestAnimationFrame(this.loop)
   }
 
   load(settings: Settings, screen: 'menu' | 'play' = 'menu') {
+    this.audio.silence()
     if (this.world) this.clearWorld()
     this.config={...settings}
     this.world=new R.World({x:0,y:-GRAVITY,z:0})
@@ -94,7 +99,7 @@ export class Game {
     this.fogColor.copy((this.scenery.scene.fog as T.FogExp2).color)
     this.resolution=qualityPresets[settings.quality].ratio
     this.resize()
-    Object.assign(this,{ accumulator:0,time:0,state:'Standing',chute:'packed',chuteTime:0,heading:0,landed:-1,landing:null,chuteOpenedAt:null,
+    Object.assign(this,{ accumulator:0,time:0,state:'Standing',chute:'packed',chuteTime:0,heading:0,landed:-1,landing:null,chuteOpenedAt:null,lastImpactSound:-1,
       enteredWater:-1,inWater:false,stationaryTime:0,peak:0,speed:0,acceleration:0,hudTime:0,cameraReady:false,wind:windAt(settings,0) })
     this.input.reset()
     useGame.setState({screen,paused:false,outcome:null,telemetry:{...initialTelemetry,height:startHeight(settings),wind:magnitude(this.wind)}})
@@ -119,7 +124,11 @@ export class Game {
       useGame.setState({firstPerson:!firstPerson}); return
     }
     if(action==='pause' && screen==='play') {
-      useGame.setState({paused:!paused}); return
+      if(paused) this.audio.unlock(this.config.volume)
+      else this.audio.silence()
+      useGame.setState({paused:!paused})
+      this.updateAudio()
+      return
     }
     if(action==='retry' && screen!=='menu') { this.load(settings,'play'); this.start(); return }
     if(action==='start' && !paused) {
@@ -128,6 +137,8 @@ export class Game {
     }
     if(action==='chute' && screen==='play' && !paused && this.config.mode==='sky' &&
       this.state==='Falling' && this.chute==='packed' && this.config.chute!=='none') {
+      this.audio.unlock(this.config.volume)
+      this.audio.cue('deploy')
       this.chute='opening'
       this.chuteTime=0
       this.publish()
@@ -137,10 +148,12 @@ export class Game {
   private start() {
     this.time=0
     const ground=this.config.mode!=='sky'
-    this.fx.prime()
+    this.audio.unlock(this.config.volume)
     this.actor.launch({x:this.input.x*.55,y:ground?-.18:.12,z:ground?3.5:3.2})
     this.state='Falling'
     useGame.setState({screen:'play',paused:false,outcome:null})
+    this.updateAudio()
+    this.audio.cue('launch')
     this.publish()
   }
 
@@ -190,6 +203,7 @@ export class Game {
       this.chuteTime+=STEP
       if(this.chuteTime>=1.05) {
         this.chute=this.config.chute==='fault'?'failed':'open'
+        this.audio.cue(this.chute==='open'?'canopy':'fault')
         if(this.chute==='open') {
           this.state='Parachuting'
           this.chuteOpenedAt=Math.max(0,chest.translation().y-1.39)
@@ -268,12 +282,15 @@ export class Game {
       if(this.landed<0 && this.config.mode!=='falls' && p.y<=this.scenery.floor+1.25 && now.y<=this.scenery.floor+2 && impulse>.3) {
         this.recordLanding(previous)
         this.state='Impacted'
-        this.fx.play(this.config.volume,false)
+        this.audio.cue('landing',clamp(magnitude(previous)/12,.25,1))
+        this.lastImpactSound=this.time
       }
       if(impactSpeed<injuryRules.minimumContactSpeed || impulse<1.7 || part.cooldown>0) return
       if(impulse>(impacts.get(part)?.impulse??0)) impacts.set(part,{impulse,position:p})
     })
+    let strongestImpact=0
     for(const [part,{impulse,position}] of impacts) {
+      strongestImpact=Math.max(strongestImpact,impulse)
       const waterScale=this.inWater?injuryRules.waterScale:1
       const landing=this.landing
       let loadScale=1
@@ -286,16 +303,21 @@ export class Game {
       part.cooldown=.19
       this.wound(part,score,position)
     }
+    if(strongestImpact>3 && this.time-this.lastImpactSound>.15) {
+      this.audio.cue('collision',clamp(strongestImpact/90,.18,1))
+      this.lastImpactSound=this.time
+    }
     if(entry) {
       this.inWater=true
       this.enteredWater=this.time
       this.state='Swimming'
       this.fx.burst({ x:entry.position.x,y:.05,z:entry.position.z },'high',false,true)
-      this.fx.play(this.config.volume,true)
+      this.audio.cue('splash',clamp(entry.speed/12,.32,1))
       this.wound(this.actor.chest,Math.max(0,entry.speed-9.4)**2*.014,entry.position)
     }
     if(this.config.mode!=='falls' && this.landed<0 && now.y<1.4 && speed<2.5 && this.time>1) {
       this.recordLanding(previous)
+      this.audio.cue('landing',.28)
       this.state='Impacted'
     }
     if(this.config.mode==='falls' && this.landed<0 && this.enteredWater<0 && this.time>2 && speed<1 && now.y>0) {
@@ -393,6 +415,13 @@ export class Game {
     this.scenery.cameraUpdate(this.camera,this.target,this.time)
   }
 
+  private updateAudio = () => {
+    const {screen,paused}=useGame.getState()
+    const volume=paused || document.hidden || screen==='menu' ? 0 : this.config.volume
+    const moving=screen==='play' && volume>0 && (this.landed<0 || this.inWater)
+    this.audio.update(volume,this.speed,this.chute==='open',this.inWater,moving)
+  }
+
   private loop = (timestamp: number) => {
     this.frame=requestAnimationFrame(this.loop)
     const elapsed=this.last ? (timestamp-this.last)/1000 : STEP
@@ -406,6 +435,7 @@ export class Game {
         this.accumulator=Math.max(0,this.accumulator-STEP)
       }
     }
+    this.updateAudio()
     this.actor.sync(firstPerson)
     this.updateCamera(dt,screen==='menu',firstPerson)
     this.renderer.render(this.scenery.scene,this.camera)
@@ -424,7 +454,6 @@ export class Game {
   }
 
   private clearWorld() {
-    this.fx.dispose()
     const geometries=new Set<T.BufferGeometry>(), materials=new Set<T.Material>()
     this.scenery.scene.traverse(obj => {
       if(obj instanceof T.InstancedMesh) obj.dispose()
@@ -444,6 +473,8 @@ export class Game {
     cancelAnimationFrame(this.frame)
     this.observer.disconnect()
     this.input.dispose()
+    document.removeEventListener('visibilitychange',this.updateAudio)
+    this.audio.dispose()
     this.clearWorld()
     this.renderer.dispose()
     this.marker.traverse(obj => {

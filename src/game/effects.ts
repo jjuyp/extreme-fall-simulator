@@ -30,22 +30,6 @@ export class Effects {
     }
     for (let i=0;i<this.drops.count;i++) this.particles.push({position:new T.Vector3(),velocity:new T.Vector3(),life:0})
   }
-  prime() {
-    try { this.audio ??= new AudioContext(); void this.audio.resume().catch(() => {}) } catch { /* audio is optional */ }
-  }
-  play(volume: number, splash: boolean) {
-    if (!this.audio || this.audio.state !== 'running' || volume === 0) return
-    const ctx = this.audio
-    const samples = ctx.createBuffer(1,Math.floor(ctx.sampleRate*.21),ctx.sampleRate)
-    const data = samples.getChannelData(0)
-    for (let i=0;i<data.length;i++) data[i] = (Math.random()*2-1) * (1-i/data.length)**4
-    const sound = ctx.createBufferSource(), filter = ctx.createBiquadFilter(), gain = ctx.createGain()
-    filter.frequency.value = splash ? 1000 : 180
-    gain.gain.value = volume*.8
-    sound.buffer = samples
-    sound.connect(filter).connect(gain).connect(ctx.destination)
-    sound.start()
-  }
   burst(p: Vec, intensity: Settings['blood'], separation = false, splash = false) {
     const count = bloodLevels[intensity] * (separation ? 2 : 1)
     for (let i=0;i<count;i++) {

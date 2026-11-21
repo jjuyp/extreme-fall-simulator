@@ -1,10 +1,33 @@
-import { test, expect, type Locator } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
+
+async function monitorAudio(page: Page) {
+  await page.addInitScript(() => {
+    const createGain=AudioContext.prototype.createGain
+    let output: AnalyserNode | undefined
+    AudioContext.prototype.createGain=function(){
+      const gain=createGain.call(this)
+      if(!output){
+        output=this.createAnalyser()
+        gain.connect(output)
+      }
+      return gain
+    }
+    Object.assign(window,{fallAudioRms:()=>{
+      if(!output || output.context.state!=='running') return 0
+      const samples=new Float32Array(output.fftSize)
+      output.getFloatTimeDomainData(samples)
+      return Math.sqrt(samples.reduce((sum,value)=>sum+value*value,0)/samples.length)
+    }})
+  })
+  return () => page.evaluate(()=>(window as Window & {fallAudioRms:()=>number}).fallAudioRms())
+}
 
 test('12 m desktop run, pause, impact, retry and menu',async ({page},info)=>{
   const errors:string[]=[]
   page.on('pageerror',e=>errors.push(e.message))
   page.on('console',m=>{if(m.type()==='error')errors.push(m.text())})
   page.on('response',r=>{if(!r.ok())errors.push(`${r.status()} ${r.url()}`)})
+  const audio=await monitorAudio(page)
   const marker=page.waitForResponse(r=>r.url().endsWith('/platform-marker.glb'))
   await page.goto('./')
   const launch=page.getByRole('button',{name:'開始模擬'})
@@ -14,10 +37,13 @@ test('12 m desktop run, pause, impact, retry and menu',async ({page},info)=>{
   await expect(page.locator('.telemetry-head small')).toBeVisible()
   console.log('desktop',await page.locator('.telemetry-head small').innerText())
   await page.screenshot({path:info.outputPath('desktop.png'),animations:'disabled'})
+  expect(await audio()).toBe(0)
   await page.keyboard.press('Space')
+  await expect.poll(audio).toBeGreaterThan(.006)
   await expect(page.getByText('自由落體',{exact:true})).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByRole('dialog')).toBeVisible()
+  await expect.poll(audio).toBeLessThan(.0005)
   await page.keyboard.press('Escape')
   await page.keyboard.press('KeyV')
   await expect(page.getByRole('button',{name:'第一人稱'})).toBeVisible()
@@ -102,6 +128,7 @@ test('all locations and heights, water transition and parachute scenarios',async
 test.describe('390px touch',()=>{
   test.use({viewport:{width:390,height:844},isMobile:true,hasTouch:true,deviceScaleFactor:2})
   test('touch viewport, camera drag, joystick and retry',async ({page},info)=>{
+    const audio=await monitorAudio(page)
     await page.goto('./')
     const launch=page.getByRole('button',{name:'開始模擬'})
     await expect(launch).toBeEnabled()
@@ -112,6 +139,7 @@ test.describe('390px touch',()=>{
     await page.getByRole('button',{name:'高空跳傘'}).tap()
     const startBox=(await launch.boundingBox())!
     await page.touchscreen.tap(startBox.x+startBox.width/2,startBox.y+startBox.height/2)
+    await expect.poll(audio).toBeGreaterThan(.006)
     await expect(page.getByRole('button',{name:'第三人稱'})).toBeVisible()
     const stick=page.locator('.stick')
     await expect(stick).toBeVisible()
